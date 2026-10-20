@@ -13,13 +13,16 @@ from protocol import SendSubtitle, CurrentTime, encode_message
 
 class VideoProcessor:
     SUBTITLE_LEAD_MS = 1000
-
+    QR_CHANGE_DELAY = 0.5
+    
     # Brightness offset
     STRENGTH = 0.04
 
     # QR configuration
     QR_VERSION = 10
     QR_MODULE_SIZE = 8
+
+
 
     def __init__(self, video_path: str, sub_path: str) -> None:
         self.video_path = video_path
@@ -159,6 +162,9 @@ class VideoProcessor:
             parents=True, exist_ok=True
         )
 
+        previous_packet_id = 0
+        msg =None
+
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 silent_path = str(Path(tmp) / "silent.mp4")
@@ -184,15 +190,19 @@ class VideoProcessor:
                         current_time = round(
                             frame_index / source_fps * 1000
                         )
-                        
-                        qr_signal = None
-                        msg = self._select_message(current_time)
 
+                        packet_id = int(
+                            frame_index / source_fps / self.QR_CHANGE_DELAY
+                        )
+
+                        qr_signal = None
+                        if packet_id != previous_packet_id:
+                            msg = self._select_message(current_time)
+                            previous_packet_id = packet_id
+                        
                         if msg is not None:
                             packet = encode_message(msg)
                             qr_signal = self._create_qr_signal(packet)
-
-
                         print(f"Frame index: {frame_index}")
 
                         # Generate two output frames
