@@ -16,7 +16,7 @@ class VideoProcessor:
     QR_CHANGE_DELAY = 0.5
     
     # Brightness offset
-    STRENGTH = 0.04
+    STRENGTH = 0.08
 
     # QR configuration
     QR_VERSION = 10
@@ -100,16 +100,19 @@ class VideoProcessor:
             region = result[
                 y:y + qr_h,
                 x:x + qr_w
-            ].astype(np.float32)
+            ]
+            hsv_region = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+            h, s, v = cv2.split(hsv_region)
 
-            offset = phase * self.STRENGTH * 255.0
+            v_float = v.astype(np.float32) + phase * self.STRENGTH * 255.0 * qr_signal
+            v_modified = np.clip(v_float, 0.0, 255.0).astype(np.uint8)
 
-            region += offset * qr_signal[:, :, None]
+            hsv_region = cv2.merge([h, s, v_modified])
+            region = cv2.cvtColor(hsv_region, cv2.COLOR_HSV2BGR)
 
             result[y:y + qr_h, x:x + qr_w] = np.clip(
                 region, 0, 255
             ).astype(np.uint8)
-
         return result
 
     def _mux_audio(self, silent_path: str, output_path: str):
@@ -136,7 +139,7 @@ class VideoProcessor:
             output_path
         ], check=True)
 
-    def output(self, output_path: str):
+    def output(self, output_path: str, double_fps = False, use_skip = False):
         cap = cv2.VideoCapture(self.video_path)
 
         if not cap.isOpened():
@@ -156,7 +159,7 @@ class VideoProcessor:
             cap.release()
             raise ValueError("Invalid input FPS")
 
-        output_fps = source_fps * 2
+        output_fps = (source_fps * 2) if double_fps else source_fps
 
         Path(output_path).parent.mkdir(
             parents=True, exist_ok=True
@@ -182,6 +185,8 @@ class VideoProcessor:
                 frame_index = 0
 
                 try:
+                    qr_phase = True
+                    skip_qr = True
                     while True:
                         ret, frame = cap.read()
                         if not ret or frame is None:
@@ -205,17 +210,31 @@ class VideoProcessor:
                             qr_signal = self._create_qr_signal(packet)
                         print(f"Frame index: {frame_index}")
 
-                        # Generate two output frames
-                        bright_frame = self.place_qr(
-                            frame, qr_signal, +1
-                        )
+                        # # Generate two output frames
+                        # bright_frame = self.place_qr(
+                        #     frame, qr_signal, +1
+                        # )
 
-                        dark_frame = self.place_qr(
-                            frame, qr_signal, -1
-                        )
+                        # dark_frame = self.place_qr(
+                        #     frame, qr_signal, -1
+                        # )
 
-                        writer.write(bright_frame)
-                        writer.write(dark_frame)
+                        # writer.write(bright_frame)
+                        # writer.write(dark_frame)
+                        for _ in range(2 if double_fps else 1):
+                            if skip_qr and use_skip:
+                                writer.write(frame)
+                                skip_qr = False
+                            else:
+                                qr_frame = self.place_qr(
+                                    frame, qr_signal, +1 if qr_phase else -1
+                                )
+                                writer.write(qr_frame)
+                                qr_phase = not qr_phase
+                                # skip next qr once a pair is complete
+                                if qr_phase:
+                                    skip_qr = True
+
 
                         frame_index += 1
 
