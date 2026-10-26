@@ -7,64 +7,30 @@ import tempfile
 import numpy as np
 
 from pathlib import Path
-from subtitle_manager import Subtitle, SubtitleManager
-from protocol import SendSubtitle, CurrentTime, encode_message
 
 
 class VideoProcessor:
-    SUBTITLE_LEAD_MS = 1000
+    """Embed Segno QR codes in order, repeating the list until the video ends."""
+
     QR_CHANGE_DELAY = 0.5
     
     # Brightness offset
     STRENGTH = 0.04
 
-    # QR configuration
-    QR_VERSION = 10
+    # Render the supplied codes at this many pixels per module.
     QR_MODULE_SIZE = 8
 
 
 
-    def __init__(self, video_path: str, sub_path: str) -> None:
+    def __init__(self, video_path: str, qr_codes: list[segno.QRCode]) -> None:
+        if not qr_codes:
+            raise ValueError("At least one QR code is required")
+        if any(not isinstance(code, segno.QRCode) for code in qr_codes):
+            raise TypeError("qr_codes must contain Segno QRCode objects")
         self.video_path = video_path
+        self.qr_codes = list(qr_codes)
 
-        self.sub_manager = SubtitleManager()
-        self.sub_manager.import_from_srt(sub_path)
-
-        self.current_subtitle = None
-
-    def _select_message(self, current_time: int):
-        # Fetch subtitles starting within the next second
-        ready = self.sub_manager.get_ready(
-            current_time + self.SUBTITLE_LEAD_MS
-        )
-
-        if ready:
-            # Assume non-overlapping subtitles
-            self.current_subtitle = ready[0]
-
-        subtitle = self.current_subtitle
-
-        # Repeat the subtitle until it expires
-        if subtitle is not None and subtitle.endTime > current_time:
-            return SendSubtitle(
-                currentTime=current_time,
-                subtitleStartTime=subtitle.startTime,
-                subtitleEndTime=subtitle.endTime,
-                sub_string=subtitle.sub_string
-            )
-
-        self.current_subtitle = None
-        return None
-
-    def _create_qr_signal(self, packet: bytes) -> np.ndarray:
-        qr = segno.make_qr(
-            packet,
-            version=self.QR_VERSION,
-            mode="byte",
-            error="H",
-            boost_error=False
-        )
-
+    def _create_qr_signal(self, qr: segno.QRCode) -> np.ndarray:
         # Segno matrix: 1 = black, 0 = white
         matrix = np.array(qr.matrix, dtype=np.uint8)
 
@@ -137,6 +103,8 @@ class VideoProcessor:
         ], check=True)
 
     def output(self, output_path: str):
+        if not np.isfinite(self.QR_CHANGE_DELAY) or self.QR_CHANGE_DELAY <= 0:
+            raise ValueError("QR_CHANGE_DELAY must be finite and greater than zero")
         cap = cv2.VideoCapture(self.video_path)
 
         if not cap.isOpened():
@@ -162,8 +130,8 @@ class VideoProcessor:
             parents=True, exist_ok=True
         )
 
-        previous_packet_id = 0
-        msg =None
+        previous_qr_index = None
+        qr_signal = None
 
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -187,23 +155,13 @@ class VideoProcessor:
                         if not ret or frame is None:
                             break
 
-                        current_time = round(
-                            frame_index / source_fps * 1000
-                        )
-
-                        packet_id = int(
+                        qr_index = int(
                             frame_index / source_fps / self.QR_CHANGE_DELAY
-                        )
+                        ) % len(self.qr_codes)
 
-                        qr_signal = None
-                        if packet_id != previous_packet_id:
-                            msg = self._select_message(current_time)
-                            previous_packet_id = packet_id
-                        
-                        if msg is not None:
-                            packet = encode_message(msg)
-                            qr_signal = self._create_qr_signal(packet)
-                        print(f"Frame index: {frame_index}")
+                        if qr_index != previous_qr_index:
+                            qr_signal = self._create_qr_signal(self.qr_codes[qr_index])
+                            previous_qr_index = qr_index
 
                         # Generate two output frames
                         bright_frame = self.place_qr(
