@@ -10,3 +10,7 @@ env.bak/
 venv.bak/
 
 output/
+experiments/
+input/
+
+BL_proxy/
