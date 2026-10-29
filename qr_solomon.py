@@ -122,6 +122,8 @@ class QRDecoder:
         except FrameChecksumError:
             return None
         if self._first is None:
+            if frame.index >= frame.data_shards:
+                return None
             self._first = frame
         elif frame.metadata != self._first.metadata:
             raise ValueError("Packets belong to mixed messages or have inconsistent metadata")
